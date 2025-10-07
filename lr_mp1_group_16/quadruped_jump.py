@@ -7,14 +7,15 @@ N_LEGS = 4
 N_JOINTS = 3
 
 # Frequencies for profile
-FREQ0 = 0.01 
-FREQ1 = 0.01
+FREQ0 = 0.75
+FREQ1 = 0.25
 
 # Gains
 KP_JOINT = np.array([1, 1, 1])
 KD_JOINT = np.array([0.1, 0.1, 0.1])
 KP_CARTESIAN = np.diag([500, 500, 500])
 KD_CARTESIAN = np.diag([20, 20, 20])
+K_VMC = 250
 
 DES_EE_POS = np.array([0, 0.1, -0.2])  # Desired foot position in leg frame
 # x and z ok, but y needs to change sign
@@ -31,7 +32,7 @@ def quadruped_jump():
     simulator = QuadSimulator(sim_options)
 
     # TODO: set parameters for the foot force profile here
-    force_profile = FootForceProfile(f0=FREQ0, f1=FREQ1, Fx=20, Fy=0, Fz=200)
+    force_profile = FootForceProfile(f0=FREQ0, f1=FREQ1, Fx=50, Fy=0, Fz=200)
 
     # Determine number of jumps to simulate
     n_jumps = 10  # Feel free to change this number
@@ -61,7 +62,7 @@ def quadruped_jump():
         tau += gravity_compensation(simulator)
 
         # If touching the ground, add virtual model
-        on_ground = True  # TODO: how do we know we're on the ground?
+        on_ground = any(simulator.get_foot_contacts())
         if on_ground:
             tau += virtual_model(simulator)
 
@@ -157,12 +158,24 @@ def virtual_model(
     simulator: QuadSimulator,
     # OPTIONAL: add potential controller parameters here (e.g., gains)
 ) -> np.ndarray:
+
+    R = simulator.get_base_orientation_matrix()
+    P = R @ np.array([[1, 1, -1, -1], [-1, 1, -1, 1], [0, 0, 0, 0]])
+
+    z = K_VMC * (np.array([0, 0, 1]) @ P)  # shape (4,)
+    F_VMC = np.array([
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        z
+    ])
+
     # All motor torques are in a single array
     tau = np.zeros(N_JOINTS * N_LEGS)
     for leg_id in range(N_LEGS):
 
-        # TODO: compute virtual model torques for leg_id
-        tau_i = np.zeros(3)
+        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
+
+        tau_i = J.T @ F_VMC[:, leg_id]
 
         # Store in torques array
         tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
