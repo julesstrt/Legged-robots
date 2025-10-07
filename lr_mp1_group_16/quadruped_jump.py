@@ -13,17 +13,17 @@ FREQ1 = 0.01
 # Gains
 KP_JOINT = np.array([1, 1, 1])
 KD_JOINT = np.array([0.1, 0.1, 0.1])
-KP_CARTESIAN = np.diag([300, 300, 300])
+KP_CARTESIAN = np.diag([500, 500, 500])
 KD_CARTESIAN = np.diag([20, 20, 20])
 
-DES_EE_POS = np.array([0, 0, -0.3])  # Desired foot position in leg frame
+DES_EE_POS = np.array([0, 0.1, -0.2])  # Desired foot position in leg frame
 # x and z ok, but y needs to change sign
 
 def quadruped_jump():
     # Initialize simulation
     # Feel free to change these options! (except for control_mode and timestep)
     sim_options = SimulationOptions(
-        on_rack=True,  # Whether to suspend the robot in the air (helpful for debugging)
+        on_rack=False,  # Whether to suspend the robot in the air (helpful for debugging)
         render=True,  # Whether to use the GUI visualizer (slower than running in the background)
         record_video=False,  # Whether to record a video to file (needs render=True)
         tracking_camera=True,  # Whether the camera follows the robot (instead of free)
@@ -133,15 +133,20 @@ def nominal_position(
         joints_vel = simulator.get_motor_velocities(leg_id)
         ee_vel = J @ joints_vel
 
+        des_ee_pos = DES_EE_POS.copy()
+
+        if leg_id == 0 or leg_id == 2:  # left legs
+            des_ee_pos[1] = -abs(des_ee_pos[1])
+
         # Cartesian component
-        tau_i += J.T @ ( KP_CARTESIAN @ (DES_EE_POS - ee_pos) + KD_CARTESIAN @ (- ee_vel) )
+        tau_i += J.T @ ( KP_CARTESIAN @ (des_ee_pos - ee_pos) + KD_CARTESIAN @ (- ee_vel) )
 
         # Joint component
         # tau_i += KP_JOINT * (ik_numerical(joint_angles, DES_EE_POS, J, ee_pos) - joint_angles) + KD_JOINT * (- joints_vel)
-        
+        # plus tard si j'ai le temps
 
-        print("current:", joint_angles)
-        print("desired:", ik_numerical(joint_angles, DES_EE_POS, J, ee_pos))
+        #print("current:", joint_angles)
+        # print("desired:", ik_numerical(joint_angles, DES_EE_POS, J, ee_pos))
 
         # Store in torques array
         tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
@@ -174,7 +179,13 @@ def gravity_compensation(
     for leg_id in range(N_LEGS):
 
         # TODO: compute gravity compensation torques for leg_id
+        mass = simulator.get_mass()/4
+        g = 9.81
+        Fg = np.array([0, 0, -mass*g])
+
+        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
         tau_i = np.zeros(3)
+        tau_i = J.T @ Fg
 
         # Store in torques array
         tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
@@ -193,6 +204,9 @@ def apply_force_profile(
 
         # TODO: compute force profile torques for leg_id
         tau_i = np.zeros(3)
+
+        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
+        tau_i = (J.T @ force_profile.force()).flatten()
 
         # Store in torques array
         tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
