@@ -1,231 +1,227 @@
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
 from env.simulation import QuadSimulator, SimulationOptions
-
 from profiles import FootForceProfile
+
+mpl.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "axes.unicode_minus": False 
+    })
 
 N_LEGS = 4
 N_JOINTS = 3
+N_JUMPS = 3
 
-# Frequencies for profile
-FREQ0 = 0.75
-FREQ1 = 0.25
+# Parameters for force profile
+FREQ0 = 1.5
+FREQ1 = 0.25 # don't care, just enough time for the dog to stabilize after the last jump
+FORCE_X = 75
+FORCE_Y = 0
+FORCE_Z = 200
 
-# Gains
-KP_JOINT = np.array([1, 1, 1])
-KD_JOINT = np.array([0.1, 0.1, 0.1])
+# Controller gains
 KP_CARTESIAN = np.diag([500, 500, 500])
 KD_CARTESIAN = np.diag([20, 20, 20])
-K_VMC = 250
+K_VMC = 500
 
-DES_EE_POS = np.array([0, 0.1, -0.2])  # Desired foot position in leg frame
-# x and z ok, but y needs to change sign
+# Desired end-effector positions
+DES_EE_POS_LIST = np.array([
+    [0, 0.10, -0.10],
+    [0, 0.10, -0.20],
+    [0, 0.10, -0.30],
+])
 
-def quadruped_jump():
-    # Initialize simulation
-    # Feel free to change these options! (except for control_mode and timestep)
+
+def quadruped_jump(des_ee_pos, enable_virtual_model):
     sim_options = SimulationOptions(
-        on_rack=False,  # Whether to suspend the robot in the air (helpful for debugging)
-        render=True,  # Whether to use the GUI visualizer (slower than running in the background)
-        record_video=False,  # Whether to record a video to file (needs render=True)
-        tracking_camera=True,  # Whether the camera follows the robot (instead of free)
+        on_rack=False,
+        render=True,
+        record_video=False,
+        tracking_camera=False,
     )
     simulator = QuadSimulator(sim_options)
+    force_profile = FootForceProfile(f0=FREQ0, f1=FREQ1, Fx=FORCE_X, Fy=FORCE_Y, Fz=FORCE_Z)
 
-    # TODO: set parameters for the foot force profile here
-    force_profile = FootForceProfile(f0=FREQ0, f1=FREQ1, Fx=50, Fy=0, Fz=200)
+    jump_duration = (force_profile.impulse_duration() + force_profile.idle_duration())
+    n_steps = int((N_JUMPS * jump_duration + force_profile.idle_duration())/ sim_options.timestep)
 
-    # Determine number of jumps to simulate
-    n_jumps = 10  # Feel free to change this number
-    jump_duration =  force_profile.impulse_duration() + force_profile.idle_duration() # determine how long a jump takes
-    n_steps = int(n_jumps * jump_duration / sim_options.timestep)
+    x_positions, y_positions, z_positions = [], [], []
+    roll_angles, pitch_angles, yaw_angles = [], [], []
+    contact_states = []
 
     for _ in range(n_steps):
-        # If the simulator is closed, stop the loop
         if not simulator.is_connected():
             break
 
-        # Step the oscillator
         force_profile.step(sim_options.timestep)
 
-        # Compute torques as motor targets
-        # The convention is as follows:
-        # - A 1D array where the torques for the 3 motors follow each other for each leg
-        # - The first 3 elements are the hip, thigh, calf torques for the FR leg.
-        # - The order of the legs is FR, FL, RR, RL (front/rear,right/left)
-        # - The resulting torque array is therefore structured as follows:
-        # [FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf, RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf]
         tau = np.zeros(N_JOINTS * N_LEGS)
-
-        # TODO: implement the functions below, and add potential controller parameters as function parameters here
-        tau += nominal_position(simulator)
+        tau += nominal_position(simulator, des_ee_pos)
         tau += apply_force_profile(simulator, force_profile)
         tau += gravity_compensation(simulator)
 
-        # If touching the ground, add virtual model
-        on_ground = any(simulator.get_foot_contacts())
-        if on_ground:
+        contacts = simulator.get_foot_contacts()
+        contact_states.append(int(any(contacts)))
+
+        if any(contacts) and enable_virtual_model:
             tau += virtual_model(simulator)
 
-        # Set the motor commands and step the simulation
         simulator.set_motor_targets(tau)
         simulator.step()
 
-    # Close the simulation
+        base_pos = simulator.get_base_position()        
+        x_positions.append(base_pos[0])
+        y_positions.append(base_pos[1])
+        z_positions.append(base_pos[2])
+
+        base_angles = simulator.get_base_orientation_roll_pitch_yaw()
+        roll_angles.append(np.rad2deg(base_angles[0]))
+        pitch_angles.append(np.rad2deg(base_angles[1]))
+        yaw_angles.append(np.rad2deg(base_angles[2]))
+
     simulator.close()
+    return (
+        np.array(x_positions),
+        np.array(y_positions),
+        np.array(z_positions),
+        np.array(roll_angles),
+        np.array(pitch_angles),
+        np.array(yaw_angles),
+        np.array(contact_states),
+        sim_options.timestep,
+    )
 
-    # OPTIONAL: add additional functions here (e.g., plotting)
 
-def pseudoInverse(A,lam=0.001):
-    """ Pseudo inverse of matrix A. 
-        Make sure to take into account dimensions of A
-            i.e. if A is mxn, what dimensions should pseudoInv(A) be if m>n 
-    """
-    m,n = np.shape(A)
-    pinvA = None
-
-    if m >= n:
-        # left pseudoinverse
-        pinvA = np.linalg.inv( A.T @ A + lam**2 * np.eye(n) ) @  A.T 
-    else:
-        # right pseudoinverse
-        pinvA = A.T @ np.linalg.inv( A @ A.T + lam**2 * np.eye(m) )
-
-    return pinvA
-
-def ik_numerical(init_joint_angles, des_ee_pos, J, ee_pos):
-    i = 0
-    max_i = 100 # max iterations
-    des_joint_angles = init_joint_angles
-    alpha = 0.5 # convergence factor
-    lam = 0.001 # damping factor for pseudoInverse
-    tol=1e-4
-
-    # Condition to iterate: while fewer than max iterations, and while error is greater than tolerance
-    while( i < max_i and abs(sum(ee_pos - des_ee_pos)) > tol ):
-
-        # Compute pseudoinverse
-        J_pinv = pseudoInverse(J, lam)
-
-        # Find end effector error vector
-        ee_error = des_ee_pos - ee_pos
-
-        # update joint_angles
-        des_joint_angles += alpha * J_pinv @ ee_error
-
-        # update iteration counter
-        i += 1
-
-    return des_joint_angles
-
-def nominal_position(
-    simulator: QuadSimulator,
-    # OPTIONAL: add potential controller parameters here (e.g., gains)
-) -> np.ndarray:
-    # All motor torques are in a single array
+def nominal_position(simulator, des_ee_pos):
     tau = np.zeros(N_JOINTS * N_LEGS)
 
     for leg_id in range(N_LEGS):
-        # TODO: compute nominal position torques for leg_id
         tau_i = np.zeros(3)
-
         J, ee_pos = simulator.get_jacobian_and_position(leg_id)
-        joint_angles = simulator.get_motor_angles(leg_id)
-        # init_joint_angles = env._robot_config.INIT_MOTOR_ANGLES
         joints_vel = simulator.get_motor_velocities(leg_id)
         ee_vel = J @ joints_vel
 
-        des_ee_pos = DES_EE_POS.copy()
+        des_ee = des_ee_pos.copy()
+        if leg_id in [0, 2]:  # left legs
+            des_ee[1] = -abs(des_ee[1])
 
-        if leg_id == 0 or leg_id == 2:  # left legs
-            des_ee_pos[1] = -abs(des_ee_pos[1])
+        tau_i += J.T @ (KP_CARTESIAN @ (des_ee - ee_pos) + KD_CARTESIAN @ (-ee_vel))
+        tau[leg_id * N_JOINTS : (leg_id + 1) * N_JOINTS] = tau_i
 
-        # Cartesian component
-        tau_i += J.T @ ( KP_CARTESIAN @ (des_ee_pos - ee_pos) + KD_CARTESIAN @ (- ee_vel) )
-
-        # Joint component
-        # tau_i += KP_JOINT * (ik_numerical(joint_angles, DES_EE_POS, J, ee_pos) - joint_angles) + KD_JOINT * (- joints_vel)
-        # plus tard si j'ai le temps
-
-        #print("current:", joint_angles)
-        # print("desired:", ik_numerical(joint_angles, DES_EE_POS, J, ee_pos))
-
-        # Store in torques array
-        tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
     return tau
 
 
-def virtual_model(
-    simulator: QuadSimulator,
-    # OPTIONAL: add potential controller parameters here (e.g., gains)
-) -> np.ndarray:
+def apply_force_profile(simulator, force_profile):
+    tau = np.zeros(N_JOINTS * N_LEGS)
 
+    for leg_id in range(N_LEGS):
+        J, _ = simulator.get_jacobian_and_position(leg_id)
+        tau_i = J.T @ force_profile.force()
+        tau[leg_id * N_JOINTS : (leg_id + 1) * N_JOINTS] = tau_i.flatten()
+
+    return tau
+
+
+def gravity_compensation(simulator):
+    tau = np.zeros(N_JOINTS * N_LEGS)
+    mass = simulator.get_mass() / 4
+    g = 9.81
+    Fg = np.array([0, 0, -mass * g])
+
+    for leg_id in range(N_LEGS):
+        J, _ = simulator.get_jacobian_and_position(leg_id)
+        tau_i = J.T @ Fg
+        tau[leg_id * N_JOINTS : (leg_id + 1) * N_JOINTS] = tau_i
+
+    return tau
+
+
+def virtual_model(simulator):
     R = simulator.get_base_orientation_matrix()
     P = R @ np.array([[1, 1, -1, -1], [-1, 1, -1, 1], [0, 0, 0, 0]])
-
-    z = K_VMC * (np.array([0, 0, 1]) @ P)  # shape (4,)
-    F_VMC = np.array([
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        z
-    ])
-
-    # All motor torques are in a single array
+    z = K_VMC * (np.array([0, 0, 1]) @ P)
+    F_VMC = np.array([[0, 0, 0, 0],
+                      [0, 0, 0, 0],
+                      z])
     tau = np.zeros(N_JOINTS * N_LEGS)
+
     for leg_id in range(N_LEGS):
-
-        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
-
+        J, _ = simulator.get_jacobian_and_position(leg_id)
         tau_i = J.T @ F_VMC[:, leg_id]
-
-        # Store in torques array
-        tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
+        tau[leg_id * N_JOINTS : (leg_id + 1) * N_JOINTS] = tau_i
 
     return tau
 
 
-def gravity_compensation(
-    simulator: QuadSimulator,
-    # OPTIONAL: add potential controller parameters here (e.g., gains)
-) -> np.ndarray:
-    # All motor torques are in a single array
-    tau = np.zeros(N_JOINTS * N_LEGS)
-    for leg_id in range(N_LEGS):
+def nominal_foot_position_comparison():
+    colormap = mpl.colormaps.get_cmap('viridis')
+    colors = [colormap(0.1), colormap(0.5), colormap(0.9)]
+    labels = ['for nominal foot position (0, 0.10, -0.10)', 
+              'for nominal foot position (0, 0.10, -0.20)',
+              'for nominal foot position (0, 0.10, -0.30)']
+    robot_base = 'base'
 
-        # TODO: compute gravity compensation torques for leg_id
-        mass = simulator.get_mass()/4
-        g = 9.81
-        Fg = np.array([0, 0, -mass*g])
+    plt.figure(figsize=(8, 4))
 
-        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
-        tau_i = np.zeros(3)
-        tau_i = J.T @ Fg
+    for des_pos, color, label in zip(DES_EE_POS_LIST, colors, labels):
+        x, y, z, roll, pitch, yaw, dt = quadruped_jump(des_pos)
+        t = np.arange(0, len(x) * dt, dt)
+        plt.plot(t, x, color=color, linestyle='-.', label=rf'$x_{{\mathrm{{{robot_base}}}}}$ {label}')
+        plt.plot(t, z, color=color, linestyle='-', label=rf'$z_{{\mathrm{{{robot_base}}}}}$ {label}')
+        
+    plt.xlabel('Time (s)')
+    plt.ylabel('Position (m)')
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig('nominal_foot_position_comparison.png', dpi=300)
+    plt.show()
 
-        # Store in torques array
-        tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
 
-    return tau
+def virtual_model_comparison():
+    colormap = mpl.colormaps.get_cmap('inferno')
+    colors = [colormap(0.2), colormap(0.5)]
+    labels = ['with virtual model', 'without virtual model']
+    robot_base = 'base'
+    des_pos = DES_EE_POS_LIST[1]
 
+    plt.figure(figsize=(8, 4))
 
-def apply_force_profile(
-    simulator: QuadSimulator,
-    force_profile: FootForceProfile,
-    # OPTIONAL: add potential controller parameters here (e.g., gains)
-) -> np.ndarray:
-    # All motor torques are in a single array
-    tau = np.zeros(N_JOINTS * N_LEGS)
-    for leg_id in range(N_LEGS):
+    for enable_vmc, color, label in zip([True, False], colors, labels):
+        x, y, z, roll, pitch, yaw, contacts, dt = quadruped_jump(
+            des_pos, enable_vmc
+        )
+        t = np.arange(0, len(x) * dt, dt)
 
-        # TODO: compute force profile torques for leg_id
-        tau_i = np.zeros(3)
+        # Shade contact regions only when VMC is active
+        if enable_vmc:
+            contact_intervals = np.diff(np.concatenate(([0], contacts, [0])))
+            start_indices = np.where(contact_intervals == 1)[0]
+            end_indices = np.where(contact_intervals == -1)[0]
+            for start, end in zip(start_indices, end_indices):
+                plt.axvspan(
+                    t[start], t[end - 1],
+                    color='steelblue', alpha=0.15, zorder=0, edgecolor='none',
+                    label='Contact phase' if start == start_indices[0] else None
+                )
 
-        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
-        tau_i = (J.T @ force_profile.force()).flatten()
+        plt.plot(t, roll, color=color, linestyle='-.', label=rf'$\phi_{{\mathrm{{{robot_base}}}}}$ {label}')
+        plt.plot(t, pitch, color=color, linestyle='-', label=rf'$\theta_{{\mathrm{{{robot_base}}}}}$ {label}')
+        plt.plot(t, yaw, color=color, linestyle=':', label=rf'$\psi_{{\mathrm{{{robot_base}}}}}$ {label}')
 
-        # Store in torques array
-        tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
-
-    return tau
+    plt.xlabel('Time (s)')
+    plt.ylabel('Angles (°)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('virtual_model_comparison.png', dpi=300)
+    plt.show()
 
 
 if __name__ == "__main__":
-    quadruped_jump()
+    quadruped_jump(DES_EE_POS_LIST[1], True)
+    # nominal_foot_position_comparison()
+    # virtual_model_comparison() 

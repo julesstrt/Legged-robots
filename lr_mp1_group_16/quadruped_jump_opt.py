@@ -17,6 +17,8 @@ from quadruped_jump import (
 N_LEGS = 4
 N_JOINTS = 3
 
+DES_EE_POS = np.array([0, 0.10, -0.20])
+
 
 def quadruped_jump_optimization():
     # Initialize simulation
@@ -40,7 +42,7 @@ def quadruped_jump_optimization():
 
     # Run the optimization
     # You can change the number of trials here
-    study.optimize(objective, n_trials=20)
+    study.optimize(objective, n_trials=50)
 
     # Close the simulation
     simulator.close()
@@ -62,7 +64,9 @@ def evaluate_jumping(trial: Trial, simulator: QuadSimulator) -> float:
     # TODO: pick optimization variables
     # The following function creates an optimization variable with given name and lower and upper bounds
     # You can then plug in the value in your controller
-    variable1 = trial.suggest_float(name="variable1", low=0.0, high=1.0)
+    #force_z = trial.suggest_float(name="force_z", low=100, high=300)
+    frequence0 = trial.suggest_float(name="frequence0", low=0.25, high=3.0)
+    #frequence1 = trial.suggest_float(name="frequence1", low=0.25, high=2.0)
 
     # Reset the simulation
     simulator.reset()
@@ -70,13 +74,13 @@ def evaluate_jumping(trial: Trial, simulator: QuadSimulator) -> float:
     # Extract simulation options
     sim_options = simulator.options
 
+    # TODO: set parameters for the foot force profile here
+    force_profile = FootForceProfile(f0=frequence0, f1=0.25, Fx=75, Fy=0, Fz=200)
+
     # Determine number of jumps to simulate
     n_jumps = 1  # Feel free to change this number
-    jump_duration = 5.0  # TODO: determine how long a jump takes
+    jump_duration = force_profile.impulse_duration() + force_profile.idle_duration()  # TODO: determine how long a jump takes
     n_steps = int(n_jumps * jump_duration / sim_options.timestep)
-
-    # TODO: set parameters for the foot force profile here
-    force_profile = FootForceProfile(f0=0, f1=0, Fx=0, Fy=0, Fz=0)
 
     for _ in range(n_steps):
         # Step the oscillator
@@ -85,12 +89,12 @@ def evaluate_jumping(trial: Trial, simulator: QuadSimulator) -> float:
         # Compute torques as motor targets (reuses your controller functions)
         # OPTIONAL: add potential extra controller parameters here
         tau = np.zeros(N_JOINTS * N_LEGS)
-        tau += nominal_position(simulator)
+        tau += nominal_position(simulator, DES_EE_POS)
         tau += apply_force_profile(simulator, force_profile)
         tau += gravity_compensation(simulator)
 
         # If touching the ground, add virtual model
-        on_ground = True  # TODO: how do we know we're on the ground?
+        on_ground = any(simulator.get_foot_contacts())  # TODO: how do we know we're on the ground?
         if on_ground:
             tau += virtual_model(simulator)
 
@@ -100,7 +104,7 @@ def evaluate_jumping(trial: Trial, simulator: QuadSimulator) -> float:
 
     # TODO: implement an objective function and return its value
     # Note: the objective function is maximized!
-    return 0
+    return simulator.get_base_position()[2] 
 
 
 if __name__ == "__main__":
