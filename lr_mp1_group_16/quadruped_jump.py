@@ -13,18 +13,19 @@ mpl.rcParams.update({
 
 N_LEGS = 4
 N_JOINTS = 3
-N_JUMPS = 3
+N_JUMPS = 15
+JUMP_MODE = "TWIST"  # Options: "FORWARD", "LATERAL", "TWIST"
 
 # Parameters for force profile
-FREQ0 = 1.5
-FREQ1 = 0.25 # don't care, just enough time for the dog to stabilize after the last jump
-FORCE_X = 75
-FORCE_Y = 0
-FORCE_Z = 200
+FREQ0   = 0.9
+FREQ1   = 0.25
+FORCE_X = 0
+FORCE_Y = 138
+FORCE_Z = 244
 
 # Controller gains
-KP_CARTESIAN = np.diag([500, 500, 500])
-KD_CARTESIAN = np.diag([20, 20, 20])
+KP_CARTESIAN = np.diag([800, 800, 800])
+KD_CARTESIAN = np.diag([30, 30, 30])
 K_VMC = 500
 
 # Desired end-effector positions
@@ -40,7 +41,7 @@ def quadruped_jump(des_ee_pos, enable_virtual_model):
         on_rack=False,
         render=True,
         record_video=False,
-        tracking_camera=False,
+        tracking_camera=True,
     )
     simulator = QuadSimulator(sim_options)
     force_profile = FootForceProfile(f0=FREQ0, f1=FREQ1, Fx=FORCE_X, Fy=FORCE_Y, Fz=FORCE_Z)
@@ -114,13 +115,28 @@ def nominal_position(simulator, des_ee_pos):
     return tau
 
 
-def apply_force_profile(simulator, force_profile):
+def apply_force_profile(simulator, force_profile)y:
     tau = np.zeros(N_JOINTS * N_LEGS)
-
+    
     for leg_id in range(N_LEGS):
-        J, _ = simulator.get_jacobian_and_position(leg_id)
-        tau_i = J.T @ force_profile.force()
-        tau[leg_id * N_JOINTS : (leg_id + 1) * N_JOINTS] = tau_i.flatten()
+        tau_i = np.zeros(3)
+        J, ee_pos = simulator.get_jacobian_and_position(leg_id)
+        
+        base_force = force_profile.force().flatten()
+        
+        if JUMP_MODE == "TWIST":
+            if leg_id in [0, 1]:  # FR et FL
+                twist_force = base_force.copy()
+                twist_force[1] = -abs(base_force[1])  # -Fy
+            else:  # RR et RL (legs 2 and 3)
+                twist_force = base_force.copy()
+                twist_force[1] = abs(base_force[1])   # +Fy
+            tau_i = (J.T @ twist_force).flatten()
+        else:
+            # FORWARD and LATERAL
+            tau_i = (J.T @ base_force).flatten()
+
+        tau[leg_id * N_JOINTS : leg_id * N_JOINTS + N_JOINTS] = tau_i
 
     return tau
 
@@ -164,10 +180,10 @@ def nominal_foot_position_comparison():
               'for nominal foot position (0, 0.10, -0.30)']
     robot_base = 'base'
 
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(6, 5))
 
     for des_pos, color, label in zip(DES_EE_POS_LIST, colors, labels):
-        x, y, z, roll, pitch, yaw, dt = quadruped_jump(des_pos)
+        x, y, z, roll, pitch, yaw, contacts, dt = quadruped_jump(des_pos, True)
         t = np.arange(0, len(x) * dt, dt)
         plt.plot(t, x, color=color, linestyle='-.', label=rf'$x_{{\mathrm{{{robot_base}}}}}$ {label}')
         plt.plot(t, z, color=color, linestyle='-', label=rf'$z_{{\mathrm{{{robot_base}}}}}$ {label}')
@@ -188,7 +204,7 @@ def virtual_model_comparison():
     robot_base = 'base'
     des_pos = DES_EE_POS_LIST[1]
 
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(6, 5))
 
     for enable_vmc, color, label in zip([True, False], colors, labels):
         x, y, z, roll, pitch, yaw, contacts, dt = quadruped_jump(
@@ -214,7 +230,7 @@ def virtual_model_comparison():
 
     plt.xlabel('Time (s)')
     plt.ylabel('Angles (°)')
-    plt.legend()
+    plt.legend(loc='lower left')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig('virtual_model_comparison.png', dpi=300)
