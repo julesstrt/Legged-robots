@@ -115,7 +115,7 @@ def nominal_position(simulator, des_ee_pos):
     return tau
 
 
-def apply_force_profile(simulator, force_profile)y:
+def apply_force_profile(simulator, force_profile):
     tau = np.zeros(N_JOINTS * N_LEGS)
     
     for leg_id in range(N_LEGS):
