@@ -79,7 +79,7 @@ class HopfNetwork():
 
     # set oscillator initial conditions  
     self.X[0,:] = np.random.rand(4) * .1
-    self.X[1,:] = self.PHI[0,:] 
+    self.X[1,:] = self.PHI[0,:]
 
     # save body and foot shaping
     self._ground_clearance = ground_clearance 
@@ -99,10 +99,25 @@ class HopfNetwork():
     """ For coupling oscillators in phase space. 
     [TODO] Update all coupling matrices.
     """
-    self.PHI_trot = np.zeros((4,4)) # [TODO]
-    self.PHI_walk = np.zeros((4,4)) # [TODO]
-    self.PHI_bound = np.zeros((4,4)) # [TODO]
-    self.PHI_pace = np.zeros((4,4)) # [TODO]
+    self.PHI_trot = np.array([[0, np.pi, np.pi, 0],
+                              [-np.pi, 0, 0, -np.pi],
+                              [-np.pi, 0, 0, -np.pi],
+                              [0, np.pi, np.pi, 0]])
+
+    self.PHI_walk = np.array([[0, np.pi, -np.pi/2, np.pi/2],
+                              [-np.pi, 0, -3*np.pi/2, -np.pi/2],
+                              [np.pi/2, 3*np.pi/2, 0, np.pi],
+                              [-np.pi/2, np.pi/2, -np.pi, 0]])
+
+    self.PHI_bound = np.array([[0, 0, np.pi, np.pi],
+                               [0, 0, np.pi, np.pi],
+                               [-np.pi, -np.pi, 0, 0],
+                               [-np.pi, -np.pi, 0, 0]])
+
+    self.PHI_pace = np.array([[0, np.pi, 0, np.pi],
+                              [-np.pi, 0, -np.pi, 0],
+                              [0, np.pi, 0, np.pi],
+                              [-np.pi, 0, -np.pi, 0]])
 
     if gait == "TROT":
       self.PHI = self.PHI_trot
@@ -124,13 +139,21 @@ class HopfNetwork():
       self._integrate_hopf_equations_rl()
     
     # map CPG variables to Cartesian foot xz positions (Equations 8, 9) 
-    x = np.zeros(4) # [TODO]
-    z = np.zeros(4) # [TODO]
+    x = - self.X[0,:] * np.cos(self.X[1,:])
+    
+    z = np.zeros(4)
+    for i in range(4):
+      # get r_i, theta_i from X
+      r, theta = self.X[:,i]
+      if np.sin(theta) > 0:
+        z[i] = - self._robot_height + self._ground_clearance * np.sin(theta)
+      else:
+        z[i] = - self._robot_height + self._ground_penetration * np.sin(theta)
 
     # scale x by step length
     if not self.use_RL:
-      # use des step len, fixed # [TODO]
-      return x, z
+      # use des step len, fixed
+      return self._des_step_len * x, z
     else:
       # RL uses amplitude to set max step length
       r = np.clip(self.X[0,:],MU_LOW,MU_UPP) 
@@ -146,21 +169,26 @@ class HopfNetwork():
     # loop through each leg's oscillator
     for i in range(4):
       # get r_i, theta_i from X
-      r, theta = 0, 0 # [TODO]
+      r, theta = X[:,i]
+
       # compute r_dot (Equation 6)
-      r_dot = 0 # [TODO]
+      r_dot = self._alpha * (self._mu - r**2) * r
+
       # determine whether oscillator i is in swing or stance phase to set natural frequency omega_swing or omega_stance (see Section 3)
-      theta_dot = 0 # [TODO]
+      if np.sin(theta) > 0:
+          theta_dot = self._omega_swing
+      else:
+          theta_dot = self._omega_stance
 
       # loop through other oscillators to add coupling (Equation 7)
       if self._couple:
-        theta_dot += 0 # [TODO]
+          theta_dot += self._coupling_strength * np.sum(X[0,:] * np.sin(X[1,:] - theta - self.PHI[i,:])) # FIXME
 
       # set X_dot[:,i]
       X_dot[:,i] = [r_dot, theta_dot]
 
     # integrate 
-    self.X = np.zeros((2,4)) # [TODO]
+    self.X = X + (X_dot_prev + X_dot) * self._dt / 2  # [TODO]
     self.X_dot = X_dot
     # mod phase variables to keep between 0 and 2pi
     self.X[1,:] = self.X[1,:] % (2*np.pi)
@@ -207,9 +235,9 @@ class HopfNetwork():
       # get r_i, theta_i from X
       r, theta = X[:,i]
       # amplitude (use mu from RL, i.e. self._mu_rl[i])
-      r_dot = 0  # [TODO]
+      r_dot = self._alpha * (self._mu_rl[i] - r**2) * r
       # phase (use omega from RL, i.e. self._omega_rl[i])
-      theta_dot = 0 # [TODO]
+      theta_dot = self._omega_rl[i] # + self._coupling_strength * np.sum(X[0,:] * np.sin(X[1,:] - theta - self.PHI[i,:])) # FIXME
 
       X_dot[:,i] = [r_dot, theta_dot]
 

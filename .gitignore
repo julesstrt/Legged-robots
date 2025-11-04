@@ -1,1 +1,6 @@
 /.conda
+papers/
+.DS_Store
+*.egg-info
+__pycache__/
+logs/

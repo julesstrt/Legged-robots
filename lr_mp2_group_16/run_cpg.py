@@ -61,12 +61,18 @@ env = QuadrupedGymEnv(render=True,              # visualize
                     )
 
 # initialize Hopf Network, supply gait
-cpg = HopfNetwork(time_step=TIME_STEP)
+cpg = HopfNetwork(gait="TROT", time_step=TIME_STEP)
 
 TEST_STEPS = int(10 / (TIME_STEP))
 t = np.arange(TEST_STEPS)*TIME_STEP
 
 # [TODO] initialize data structures to save CPG and robot states
+joint_pos = np.zeros((12, TEST_STEPS))
+joint_vel = np.zeros((12, TEST_STEPS))
+foot_x = np.zeros((4, TEST_STEPS))
+foot_z = np.zeros((4, TEST_STEPS))
+r_cpg = np.zeros((4, TEST_STEPS))
+theta_cpg = np.zeros((4, TEST_STEPS))
 
 ############## Sample Gains
 # joint PD gains
@@ -85,8 +91,8 @@ for j in range(TEST_STEPS):
   xs,zs = cpg.update()
 
   # [TODO] get current motor angles and velocities for joint PD, see GetMotorAngles(), GetMotorVelocities() in quadruped.py
-  # q = env.robot.GetMotorAngles()
-  # dq = env.robot.GetMotorVelocities()
+  q = env.robot.GetMotorAngles()
+  dq = env.robot.GetMotorVelocities()
 
   # loop through desired foot positions and calculate torques
   for i in range(4):
@@ -97,24 +103,24 @@ for j in range(TEST_STEPS):
     leg_xyz = np.array([xs[i], sideSign[i] * foot_y, zs[i]])
 
     # call inverse kinematics to get corresponding joint angles (see ComputeInverseKinematics() in quadruped.py)
-    leg_q = np.zeros(3) # [TODO] 
+    leg_q = env.robot.ComputeInverseKinematics(i, leg_xyz) # [TODO] 
 
     # Add joint PD contribution to tau for leg i (Equation 4)
-    tau += np.zeros(3) # [TODO] 
+    tau += kp * (leg_q - q[3*i:3*i+3]) - kd * dq[3*i:3*i+3] # [TODO] 
 
     # add Cartesian PD contribution
     if ADD_CARTESIAN_PD:
       # Get desired xyz position in leg frame (use ComputeJacobianAndPosition with the joint angles you just found above)
-      # [TODO] 
+      Jd, pd = env.robot.ComputeJacobianAndPosition(i, specific_q=leg_q) # [TODO] 
 
       # Get current Jacobian and foot position in leg frame (see ComputeJacobianAndPosition() in quadruped.py)
-      # [TODO] 
+      J, p = env.robot.ComputeJacobianAndPosition(i) # [TODO] 
 
       # Get current foot velocity in leg frame (Equation 2)
-      # [TODO] 
+      v = J @ dq[3*i:3*i+3] # [TODO] 
 
       # Calculate torque contribution from Cartesian PD (Equation 5) [Make sure you are using matrix multiplications]
-      tau += np.zeros(3) # [TODO]
+      tau += J.T @ (kpCartesian @ (pd - p) - kdCartesian @ v)  # [TODO]
 
     # Set tau for legi in action vector
     action[3*i:3*i+3] = tau
@@ -123,11 +129,24 @@ for j in range(TEST_STEPS):
   env.step(action) 
 
   # [TODO] save any CPG or robot states
+  joint_pos[:, j] = q
+  joint_vel[:, j] = dq
+  foot_x[:, j] = xs
+  foot_z[:, j] = zs
+  r_cpg[:, j] = cpg.get_r()
+  theta_cpg[:, j] = cpg.get_theta()
 
 ##################################################### 
 # PLOTS
 #####################################################
-# [TODO] Create your plots
+fig, axs = plt.subplots(2, 1, sharex=True)
+axs[0].plot(t, foot_x[0,:], label='FR foot x')
+axs[0].plot(t, foot_z[0,:], label='FR foot z')
+axs[0].legend()
+axs[1].plot(t, r_cpg[0,:], label='r_FR')
+axs[1].plot(t, theta_cpg[0,:], label='theta_FR')
+axs[1].legend()
+plt.show()
 
 # example
 # fig = plt.figure()
