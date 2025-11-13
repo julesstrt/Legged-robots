@@ -42,8 +42,16 @@ import matplotlib
 #   matplotlib.use('TkAgg')
 
 from matplotlib import pyplot as plt
+import matplotlib as mpl
 from env.hopf_network import HopfNetwork
 from env.quadruped_gym_env import QuadrupedGymEnv
+
+mpl.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "axes.unicode_minus": False 
+    })
 
 ADD_CARTESIAN_PD = True
 TIME_STEP = 0.001
@@ -63,7 +71,8 @@ env = QuadrupedGymEnv(render=True,              # visualize
 # initialize Hopf Network, supply gait
 cpg = HopfNetwork(gait="TROT", time_step=TIME_STEP)
 
-TEST_STEPS = int(10 / (TIME_STEP))
+SIMULATION_TIME = 2  # seconds
+TEST_STEPS = int(SIMULATION_TIME / (TIME_STEP))
 t = np.arange(TEST_STEPS)*TIME_STEP
 
 # [TODO] initialize data structures to save CPG and robot states
@@ -73,6 +82,8 @@ foot_x = np.zeros((4, TEST_STEPS))
 foot_z = np.zeros((4, TEST_STEPS))
 r_cpg = np.zeros((4, TEST_STEPS))
 theta_cpg = np.zeros((4, TEST_STEPS))
+r_dot_cpg = np.zeros((4, TEST_STEPS))
+theta_dot_cpg = np.zeros((4, TEST_STEPS))
 
 ############## Sample Gains
 # joint PD gains
@@ -135,21 +146,114 @@ for j in range(TEST_STEPS):
   foot_z[:, j] = zs
   r_cpg[:, j] = cpg.get_r()
   theta_cpg[:, j] = cpg.get_theta()
+  r_dot_cpg[:, j] = cpg.get_dr()
+  theta_dot_cpg[:, j] = cpg.get_dtheta()
 
+
+print(r_cpg[0, :])
 ##################################################### 
 # PLOTS
 #####################################################
-fig, axs = plt.subplots(2, 1, sharex=True)
-axs[0].plot(t, foot_x[0,:], label='FR foot x')
-axs[0].plot(t, foot_z[0,:], label='FR foot z')
-axs[0].legend()
-axs[1].plot(t, r_cpg[0,:], label='r_FR')
-axs[1].plot(t, theta_cpg[0,:], label='theta_FR')
-axs[1].legend()
-plt.show()
 
-# example
-# fig = plt.figure()
-# plt.plot(t,joint_pos[1,:], label='FR thigh')
-# plt.legend()
+# === 1. Plot CPG states (r, θ, ṙ, θ̇) ===
+legs = ['FR', 'FL', 'RR', 'RL']
+leg_colors = {
+    'FR': '#4169E1',  # royal blue
+    'FL': '#DC143C',  # crimson
+    'RR': '#FF8C00',  # dark orange
+    'RL': '#228B22',  # forest green
+}
+styles = [(0, (5, 3)), (2, (5, 3)), (4, (5, 3)), (6, (5, 3))]  # phase offsets
+
+fig, axs = plt.subplots(4, 1, sharex=True, figsize=(10, 8))
+
+
+# r [m]
+for j, (leg, color) in enumerate(leg_colors.items()):
+    i = legs.index(leg)
+    axs[0].plot(
+        t, r_cpg[i, :],
+        color=color, linestyle=styles[j],
+        label=fr'{leg}', alpha=0.9
+    )
+axs[0].set_ylabel(r'$r~[\mathrm{amplitude}]$')
+axs[0].legend(loc='upper right', ncol=1)
+
+# \dot{r} [m/s]
+for j, (leg, color) in enumerate(leg_colors.items()):
+    i = legs.index(leg)
+    axs[1].plot(
+        t, r_dot_cpg[i, :],
+        color=color, linestyle=styles[j],
+        label=fr'{leg}', alpha=0.9
+    )
+axs[1].set_ylabel(r'$\dot{r}~[\mathrm{rate}]$')
+axs[1].legend(loc='upper right', ncol=1)
+
+# \theta [rad]
+for j, (leg, color) in enumerate(leg_colors.items()):
+    i = legs.index(leg)
+    axs[2].plot(
+        t, theta_cpg[i, :],
+        color=color, linestyle=styles[j],
+        label=fr'{leg}', alpha=0.9
+    )
+axs[2].set_ylabel(r'$\theta~[\mathrm{rad}]$')
+axs[2].legend(loc='upper right', ncol=1)
+
+# \dot{\theta} [rad/s]
+for j, (leg, color) in enumerate(leg_colors.items()):
+    i = legs.index(leg)
+    axs[3].plot(
+        t, theta_dot_cpg[i, :],
+        color=color, linestyle=styles[j],
+        label=fr'{leg}', alpha=0.9
+    )
+axs[3].set_ylabel(r'$\dot{\theta}~[\mathrm{rad/s}]$')
+axs[3].set_xlabel(r'\textbf{Time [s]}')
+axs[3].legend(loc='upper right', ncol=1)
+
+# Common formatting
+for ax in axs:
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.label_outer()  # hide inner x labels
+    ax.set_xlim([0, SIMULATION_TIME])
+
+plt.tight_layout()
+plt.savefig("cpg_states_trot_gait.png", dpi=300, bbox_inches='tight')
+plt.show()
+# r (amplitude) converges to desired value (sqrt of mu)
+
+
+# # === 2. Compare desired vs actual foot position (FR leg) ===
+# leg_index = 0
+# J, p_actual = env.robot.ComputeJacobianAndPosition(leg_index)
+# foot_x_des = foot_x[leg_index, :]
+# foot_z_des = foot_z[leg_index, :]
+
+# # For simplicity, assume you logged p_actual or recompute for each saved q
+# # We'll simulate "actual" by using the last computed J,p at the end of sim
+# fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8,6))
+# axs[0].plot(t, foot_x_des, label='Desired x')
+# axs[0].plot(t, np.gradient(foot_x_des, TIME_STEP)*0.0 + p_actual[0], '--', label='Actual x (approx)')
+# axs[0].legend(); axs[0].set_ylabel('Foot X [m]')
+# axs[1].plot(t, foot_z_des, label='Desired z')
+# axs[1].plot(t, np.gradient(foot_z_des, TIME_STEP)*0.0 + p_actual[2], '--', label='Actual z (approx)')
+# axs[1].legend(); axs[1].set_xlabel('Time [s]'); axs[1].set_ylabel('Foot Z [m]')
+# plt.suptitle("Desired vs Actual Foot Position (FR leg) — Joint PD + Cartesian PD")
+# plt.show()
+
+
+# # === 3. Desired vs Actual Joint Angles (FR leg) ===
+# leg_index = 0
+# fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8,6))
+# labels = ['Hip', 'Thigh', 'Calf']
+# for k in range(3):
+#     axs[k].plot(t, joint_pos[3*leg_index + k, :], label='Actual')
+#     axs[k].plot(t, np.gradient(joint_pos[3*leg_index + k, :], TIME_STEP)*0.0 + leg_q[k],
+#                 '--', label='Desired')
+#     axs[k].set_ylabel(labels[k])
+#     axs[k].legend(loc='upper right')
+# axs[-1].set_xlabel('Time [s]')
+# plt.suptitle("Desired vs Actual Joint Angles (FR leg)")
 # plt.show()
