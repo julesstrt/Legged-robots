@@ -852,8 +852,8 @@ class QuadrupedGymEnv(gym.Env):
     elapsed = current_time - self._last_frame_time
     self._last_frame_time = current_time
     time_diff = max(0, self._time_step - elapsed)
-    if time_diff > 0:
-      time.sleep(time_diff)
+ #   if time_diff > 0:
+  #    time.sleep(time_diff)
 
     base_pos = self.robot.GetBasePosition()
     camInfo = self._pybullet_client.getDebugVisualizerCamera()

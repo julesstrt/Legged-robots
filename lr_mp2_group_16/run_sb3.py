@@ -51,13 +51,18 @@ from env.quadruped_gym_env import QuadrupedGymEnv
 
 LEARNING_ALG = "PPO" # or "SAC"
 LOAD_NN = False # if you want to initialize training with a previous model 
-NUM_ENVS = 1    # how many pybullet environments to create for data collection
+NUM_ENVS = 8    # how many pybullet environments to create for data collection
 USE_GPU = False # make sure to install all necessary drivers 
+
+'''NUM_ENV=1 :tu ne fais tourner qu’un seul robot, tu obtiens une seule trajectoire d’expérience à la fois.
+Si tu en fais tourner 8 en parallèle, tu obtiens 8 trajectoires simultanées dans le même temps. => plus rapide'''
 
 # after implementing, you will want to test how well the agent learns with your MDP: 
 # env_configs = {"motor_control_mode":"CPG",
 #                "task_env": "FWD_LOCOMOTION", #  "LR_COURSE_TASK",
 #                "observation_space_mode": "LR_COURSE_OBS"}
+#"FWD_LOCOMOTION"=la velocity policy (avance à une vitesse cible)
+#"LR_COURSE_TASK"=la task-specific policy (Gaps, Stairs, Slopes) on choisit un des 3
 env_configs = {}
 
 if USE_GPU and LEARNING_ALG=="SAC":
@@ -79,7 +84,29 @@ os.makedirs(SAVE_PATH, exist_ok=True)
 checkpoint_callback = CheckpointCallback(save_freq=30000, save_path=SAVE_PATH,name_prefix='rl_model', verbose=2)
 
 # create Vectorized gym environment
-env = lambda: QuadrupedGymEnv(**env_configs)  
+
+'''
+Vectoriser = transformer 1 environnement en une interface qui gère plusieurs environnements simultanément (un vector d’envs).
+Au lieu d’appeler env.step(action) et d’obtenir une seule (obs, reward, done, info), tu appelles vec_env.step(actions) où actions est un tableau de taille n_envs et tu reçois des résultats pour chaque env en même temps.
+
+Résultat typique :
+
+obs devient un tableau de forme (n_envs, obs_dim) (ou un dict de tableaux).
+
+rewards devient un vecteur de longueur n_envs.
+make_vec_env crée plusieurs environnements identiques (copies de ton QuadrupedGymEnv)
+qui tournent en parallèle.
+//
+Le mot-clé lambda crée une fonction anonyme en une ligne.
+C’est comme écrire :
+
+def create_env():
+    return QuadrupedGymEnv(**env_configs)
+
+
+Les deux sont équivalents. on le fait car make_vec_env attend une fonction qui crée un environnement lorsqu’elle est appelée, pas un environnement lui-même.
+'''
+env = lambda: QuadrupedGymEnv(**env_configs) #si env_configs est vide, QuadrupedGymEnv() a des arguements par défaut dans son init
 env = make_vec_env(env, monitor_dir=SAVE_PATH,n_envs=NUM_ENVS)
 
 # normalize observations to stabilize learning (why?)
@@ -92,9 +119,25 @@ if LOAD_NN:
 
 # Multi-layer perceptron (MLP) policy of two layers of size _,_ each with tanh activation function
 policy_kwargs = dict(net_arch=[256,256]) # act_fun=tf.nn.tanh
+'''que ce soit la velocity policy ou la task-specific policy, on utilise un réseau de neurones avec 2 couches cachées de 256 neurones chacune.
+une entrée = ton vecteur d’observation (41 dimensions par ex.)
+
+2 couches cachées de 256 neurones chacune
+
+une sortie = ton vecteur d’action (8 (CPG) ou 12 (PD, torque control, cartesian control) valeurs selon ton mode de contrôle)
+
+avec des fonctions d’activation Tanh (par défaut dans PPO)'''
 
 # What are these hyperparameters? Check here: https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html
 n_steps = 4096 
+'''Si NUM_ENVS = 1, alors :
+
+L’agent collecte 4096 étapes de simulation
+
+Ensuite, il fait une mise à jour du réseau
+
+Si tu avais NUM_ENVS = 8, chaque environnement collecterait 4096 / 8 = 512 steps,
+pour un total de 4096 steps combinés.'''
 learning_rate = lambda f: 1e-4 
 ppo_config = {  "gamma":0.99, 
                 "n_steps": int(n_steps/NUM_ENVS), 
