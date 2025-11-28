@@ -4,3 +4,4 @@ papers/
 *.egg-info
 __pycache__/
 logs/
+*.mp4
