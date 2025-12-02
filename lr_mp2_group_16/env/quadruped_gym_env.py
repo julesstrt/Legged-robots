@@ -127,7 +127,7 @@ class QuadrupedGymEnv(gym.Env):
       isRLGymInterface=True,
       time_step=0.001,
       action_repeat=10,  
-      motor_control_mode="PD",
+      motor_control_mode="CPG",
       task_env="FWD_LOCOMOTION",
       observation_space_mode="DEFAULT",
       on_rack=False,
@@ -182,6 +182,7 @@ class QuadrupedGymEnv(gym.Env):
     self._test_flagrun = test_flagrun
     self.goal_id = None
     self._terrain = terrain
+    
     if self._add_noise:
       self._observation_noise_stdev = 0.01 #
     else:
@@ -282,7 +283,9 @@ class QuadrupedGymEnv(gym.Env):
     self.observation_space = spaces.Box(observation_low, observation_high, dtype=np.float32)
 
   def setupActionSpace(self):
-    """ Set up action space for RL. """
+    """ Set up action space for RL. 
+    PD optimise joint positions (les angles donc 12 au total), CARTESAIN_PD optimise les torque (12 aussi), TORQUE PAS DEFINI devrait optimiser torques (12 aussi)
+     CPG optimise les mu et omega des oscillateurs (4x2 au total)"""
     if self._motor_control_mode in ["PD","TORQUE", "CARTESIAN_PD"]:
       action_dim = 12
     elif self._motor_control_mode in ["CPG"]:
@@ -306,7 +309,7 @@ class QuadrupedGymEnv(gym.Env):
       # self._observation = np.zeros(50)
 
       # Collect all available proprioceptive states
-      motor_angles = self.robot.GetMotorAngles()                          # FIXME do we have access to all of that??
+      motor_angles = self.robot.GetMotorAngles()      # FIXME do we have access to all of that??
       motor_vels   = self.robot.GetMotorVelocities()
       base_rpy     = self.robot.GetBaseOrientationRollPitchYaw()
       base_ang_vel = self.robot.GetBaseAngularVelocity()
@@ -342,7 +345,12 @@ class QuadrupedGymEnv(gym.Env):
     return observation
 
   def _get_info(self) -> dict:
-    return {'base_pos': self.robot.GetBasePosition()} 
+    info = {'base_pos': self.robot.GetBasePosition(),
+            'base_vel': self.robot.GetBaseLinearVelocity()}
+    if self._motor_control_mode == "CPG":
+      info['cpg_r'] = self._cpg.get_r()
+      info['cpg_theta'] = self._cpg.get_theta()
+    return info 
 
   ######################################################################################
   # Termination and reward
@@ -370,16 +378,15 @@ class QuadrupedGymEnv(gym.Env):
 
   def _reward_fwd_locomotion(self, des_vel_x=None):
     """Learn forward locomotion at a desired velocity. """
-    vel_tracking_reward = 0.1 * np.clip(self.robot.GetBaseLinearVelocity()[0], 0.2, 1.0)
+    vel_tracking_reward = 1.0 * np.clip(self.robot.GetBaseLinearVelocity()[0], 0.2, 1.0)
     # If you want to track a desired velocity 
     # vel_tracking_reward = 0.05 * np.exp( -1/ 0.25 *  (self.robot.GetBaseLinearVelocity()[0] - des_vel_x)**2 )
     
     # minimize yaw (go straight)
-    yaw_reward = -0.2 * np.abs(self.robot.GetBaseOrientationRollPitchYaw()[2]) 
-    
+    yaw_reward = -0.0 * np.abs(self.robot.GetBaseOrientationRollPitchYaw()[2]) 
     # don't drift laterally 
     drift_reward = -0.01 * abs(self.robot.GetBasePosition()[1]) 
-    
+  
     # minimize energy 
     energy_reward = 0 
 
@@ -569,6 +576,7 @@ class QuadrupedGymEnv(gym.Env):
     # scale omega to ranges, and set in CPG (range is an example)
     omega = self._scale_helper( u[0:4], 5, 4.5*2*np.pi)
     self._cpg.set_omega_rl(omega)
+    #self.theta_dot_log.append(self._cpg._omega_rl)
 
     # scale mu to ranges, and set in CPG (squared since we converge to the sqrt in the CPG amplitude)
     mus = self._scale_helper( u[4:8], MU_LOW**2, MU_UPP**2)

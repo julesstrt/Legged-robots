@@ -32,7 +32,7 @@ import os, sys
 import gymnasium as gym
 import numpy as np
 import time
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from sys import platform
 # may be helpful depending on your system
@@ -41,6 +41,8 @@ from sys import platform
 #   matplotlib.use("Qt5Agg")
 # else: # linux
 #   matplotlib.use('TkAgg')
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # stable-baselines3
 from stable_baselines3.common.monitor import load_results 
@@ -57,7 +59,7 @@ from utils.file_utils import get_latest_model, load_all_results
 LEARNING_ALG = "PPO" #"SAC"
 interm_dir = "./logs/intermediate_models/"
 # path to saved models, i.e. interm_dir + '102824115106'
-log_dir = interm_dir + ''
+log_dir = interm_dir + 'cpg_NOyawREWARD_0.6velREWARD' # change to your log dir
 
 # initialize env configs (render at test time)
 # check ideal conditions, as well as robustness to UNSEEN noise during training
@@ -92,18 +94,141 @@ obs = env.reset()
 episode_reward = 0
 
 # [TODO] initialize arrays to save data from simulation 
+base_positions = []
+base_velocities = []
+base_cpg_r = []
+base_cpg_theta = []
+
+actions_list = []
+rewards_list = []
 
 for i in range(2000):
     action, _states = model.predict(obs,deterministic=False) # sample at test time? ([TODO]: test if the outputs make sense)
     obs, rewards, dones, info = env.step(action)
     episode_reward += rewards
     
+    # Extract info from step
+    base_pos = info[0]['base_pos']
+    base_vel = info[0]['base_vel']
+    
+
+    # Save data
+    base_velocities.append(base_vel)
+    base_cpg_r.append(info[0].get('cpg_r', np.zeros(4)))
+    base_cpg_theta.append(info[0].get('cpg_theta', np.zeros(4)))
+
+    actions_list.append(action)
+    rewards_list.append(rewards)
+    
     if dones:
         print('episode_reward', episode_reward)
         print('Final base position', info[0]['base_pos'])
+        print('Final base velocity', info[0]['base_vel'])
         episode_reward = 0
 
     # [TODO] save data from current robot states for plots 
     # To get base position, for example: env.envs[0].env.robot.GetBasePosition() 
-    
+
+
+
+base_velocities = np.array(base_velocities)
+actions_list = np.array(actions_list)
+rewards_list = np.array(rewards_list)
+base_cpg_r = np.array(base_cpg_r)
+base_cpg_theta = np.array(base_cpg_theta)
+
 # [TODO] make plots
+
+# --- Plot velocity magnitude ---
+vel_norm = np.linalg.norm(base_velocities, axis=1)
+plt.figure()
+plt.plot(vel_norm)
+plt.title("Vitesse linéaire du robot")
+plt.xlabel("Timestep")
+plt.ylabel("|v| (m/s)")
+plt.grid(True)
+
+
+# --- Plot cpg_r ---
+if base_cpg_r.size > 0 and base_cpg_r[0].size > 0:
+    plt.figure()
+    for i in range(base_cpg_r[0].size):
+        plt.plot(base_cpg_r[:, i], label=f'Leg {i}')
+    plt.title("cpg_r (CPG amplitudes)")
+    plt.xlabel("Timestep")
+    plt.ylabel("cpg_r")
+    plt.legend()
+    plt.grid(True)
+
+# --- Plot cpg_theta ---
+if base_cpg_theta.size > 0 and base_cpg_theta[0].size > 0:
+    plt.figure()
+    for i in range(base_cpg_theta[0].size):
+        plt.plot(base_cpg_theta[:, i], label=f'Leg {i}')
+    plt.title("cpg_theta (CPG frequencies)")
+    plt.xlabel("Timestep")
+    plt.ylabel("cpg_theta")
+    plt.legend()
+    plt.grid(True)
+
+plt.show()
+
+'''mpl.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "axes.unicode_minus":False
+})
+'''
+
+TIME_STEP = 0.01
+t = np.arange(2000)*TIME_STEP
+
+def plot_cpg_states():
+    legs = ['FR', 'FL', 'RR', 'RL']
+    leg_colors = {
+        'FR': '#4169E1',  # royal blue
+        'FL': '#DC143C',  # crimson
+        'RR': '#FF8C00',  # dark orange
+        'RL': '#228B22',  # forest green
+    }
+    styles = [(0, (5, 3)), (2, (5, 3)), (4, (5, 3)), (6, (5, 3))]  # phase offsets
+
+    # Changement ici : seulement 2 subplots au lieu de 4
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(6, 6))
+
+    # r [m] - Premier subplot
+    for j, (leg, color) in enumerate(leg_colors.items()):
+        i = legs.index(leg)
+        axs[0].plot(
+            t, base_cpg_r[:, i],
+            color=color, linestyle=styles[j],
+            label=fr'{leg}', alpha=0.9
+        )
+    axs[0].set_ylabel(r'$r~[\mathrm{amplitude}]$')
+    axs[0].legend(loc='upper right', ncol=1)
+
+    # \theta [rad] - Deuxième subplot
+    for j, (leg, color) in enumerate(leg_colors.items()):
+        i = legs.index(leg)
+        axs[1].plot(
+            t, base_cpg_theta[:, i],
+            color=color, linestyle=styles[j],
+            label=fr'{leg}', alpha=0.9
+        )
+    axs[1].set_ylabel(r'$\theta~[\mathrm{rad}]$')
+    axs[1].legend(loc='upper right', ncol=1)
+    axs[1].set_xlabel(r'Time $[s]$')
+
+    # Common formatting
+    for ax in axs:
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.label_outer()  # hide inner x labels
+        ax.set_xlim([0, 2000*TIME_STEP])
+
+    plt.tight_layout()
+    plt.savefig("lr_mp2_group_16/cpg_states_bound_gait.png", dpi=300, bbox_inches='tight')
+    plt.show()
+    # r (amplitude) converges to desired value (sqrt of mu)
+
+plot_cpg_states()
