@@ -56,10 +56,12 @@ from env.quadruped_gym_env import QuadrupedGymEnv
 from utils.utils import plot_results
 from utils.file_utils import get_latest_model, load_all_results
 
+TIME_STEP = 0.01
+
 LEARNING_ALG = "PPO" #"SAC"
 interm_dir = "./logs/intermediate_models/"
 # path to saved models, i.e. interm_dir + '102824115106'
-log_dir = interm_dir + 'cpg_NOyawREWARD_0.6velREWARD' # change to your log dir
+log_dir = interm_dir + 'slope_cpg_bigNegx0.4yaw1.3velREWARD1.2targetvel' # change to your log dir
 
 # initialize env configs (render at test time)
 # check ideal conditions, as well as robustness to UNSEEN noise during training
@@ -101,6 +103,12 @@ base_cpg_theta = []
 
 actions_list = []
 rewards_list = []
+CoT_list = []
+
+# Get initial base position and robot mass for CoT calculation
+robot = env.envs[0].env.robot
+last_base_pos = np.array(robot.GetBasePosition(), dtype=float)
+mass = sum(robot.GetTotalMassFromURDF())
 
 for i in range(2000):
     action, _states = model.predict(obs,deterministic=False) # sample at test time? ([TODO]: test if the outputs make sense)
@@ -108,9 +116,11 @@ for i in range(2000):
     episode_reward += rewards
     
     # Extract info from step
-    base_pos = info[0]['base_pos']
+    base_pos = np.array(info[0]['base_pos'], dtype=float)
     base_vel = info[0]['base_vel']
     
+    # Get current motor velocities for energy calculation
+    dq = robot.GetMotorVelocities()
 
     # Save data
     base_velocities.append(base_vel)
@@ -119,6 +129,22 @@ for i in range(2000):
 
     actions_list.append(action)
     rewards_list.append(rewards)
+    
+    # Compute Cost of Transport (CoT)
+    # Get motor torques (which were actually applied, not the raw actions)
+    tau_all = np.array(robot.GetMotorTorques(), dtype=float)
+    vel_all = np.array(dq, dtype=float)
+    power = np.abs(np.dot(tau_all, vel_all))
+    energy = power * TIME_STEP
+    distance_travelled = np.sqrt((base_pos[0] - last_base_pos[0])**2 + (base_pos[1] - last_base_pos[1])**2)
+    
+    # Avoid division by zero
+    if distance_travelled > 1e-6:
+        CoT_list.append(energy / (mass * 9.81 * distance_travelled))
+    else:
+        CoT_list.append(0)
+    
+    last_base_pos = base_pos
     
     if dones:
         print('episode_reward', episode_reward)
@@ -130,12 +156,22 @@ for i in range(2000):
     # To get base position, for example: env.envs[0].env.robot.GetBasePosition() 
 
 
-
 base_velocities = np.array(base_velocities)
 actions_list = np.array(actions_list)
 rewards_list = np.array(rewards_list)
 base_cpg_r = np.array(base_cpg_r)
 base_cpg_theta = np.array(base_cpg_theta)
+CoT_list = np.array(CoT_list)
+
+# Calculate and print average metrics
+avg_CoT = np.mean(CoT_list[CoT_list > 0])  # Exclude zero values
+vel_norm = np.linalg.norm(base_velocities, axis=1)
+avg_speed = np.mean(vel_norm)
+
+print("\n" + "="*50)
+print(f"Average Cost of Transport (CoT): {avg_CoT:.4f} J/(kg·m)")
+print(f"Average Speed: {avg_speed:.4f} m/s")
+print("="*50 + "\n")
 
 # [TODO] make plots
 
@@ -143,7 +179,7 @@ base_cpg_theta = np.array(base_cpg_theta)
 vel_norm = np.linalg.norm(base_velocities, axis=1)
 plt.figure()
 plt.plot(vel_norm)
-plt.title("Vitesse linéaire du robot")
+plt.title("Robot's linear velocity (x axis)")
 plt.xlabel("Timestep")
 plt.ylabel("|v| (m/s)")
 plt.grid(True)
@@ -165,11 +201,19 @@ if base_cpg_theta.size > 0 and base_cpg_theta[0].size > 0:
     plt.figure()
     for i in range(base_cpg_theta[0].size):
         plt.plot(base_cpg_theta[:, i], label=f'Leg {i}')
-    plt.title("cpg_theta (CPG frequencies)")
+    plt.title("cpg_theta (CPG phases)")
     plt.xlabel("Timestep")
     plt.ylabel("cpg_theta")
     plt.legend()
     plt.grid(True)
+
+# --- Plot Cost of Transport (CoT) ---
+plt.figure()
+plt.plot(CoT_list)
+plt.title("Cost of Transport (CoT)")
+plt.xlabel("Timestep")
+plt.ylabel("CoT (J/(kg·m))")
+plt.grid(True)
 
 plt.show()
 
@@ -181,7 +225,6 @@ plt.show()
 })
 '''
 
-TIME_STEP = 0.01
 t = np.arange(2000)*TIME_STEP
 
 def plot_cpg_states():

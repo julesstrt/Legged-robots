@@ -128,13 +128,13 @@ class QuadrupedGymEnv(gym.Env):
       time_step=0.001,
       action_repeat=10,  
       motor_control_mode="CPG",
-      task_env="FWD_LOCOMOTION",
+      task_env="LR_COURSE_TASK", #LR_COURSE_TASK
       observation_space_mode="DEFAULT",
       on_rack=False,
       render=False,
       record_video=False,
       add_noise=True,
-      terrain=None,
+      terrain="SLOPES",
       test_flagrun=False, 
       **kwargs): # any extra arguments from legacy
     """Initialize the quadruped gym environment.
@@ -378,7 +378,7 @@ class QuadrupedGymEnv(gym.Env):
 
   def _reward_fwd_locomotion(self, des_vel_x=None):
     """Learn forward locomotion at a desired velocity. """
-    vel_tracking_reward = 1.0 * np.clip(self.robot.GetBaseLinearVelocity()[0], 0.2, 1.0)
+    vel_tracking_reward = 0.6 * np.clip(self.robot.GetBaseLinearVelocity()[0], 0.2, 1.0)
     # If you want to track a desired velocity 
     # vel_tracking_reward = 0.05 * np.exp( -1/ 0.25 *  (self.robot.GetBaseLinearVelocity()[0] - des_vel_x)**2 )
     
@@ -392,6 +392,7 @@ class QuadrupedGymEnv(gym.Env):
 
     for tau,vel in zip(self._dt_motor_torques,self._dt_motor_velocities):
       energy_reward += np.abs(np.dot(tau,vel)) * self._time_step
+
 
     reward = vel_tracking_reward \
             + yaw_reward \
@@ -454,7 +455,7 @@ class QuadrupedGymEnv(gym.Env):
 
     # --- 1. Forward velocity reward ---
     # Desired forward speed
-    target_speed = 1.0  # m/s
+    target_speed = 1.2  # m/s
     vx = lin_vel[0]
     vel_reward = np.exp(-((vx - target_speed) ** 2) / 0.25)
 
@@ -463,7 +464,7 @@ class QuadrupedGymEnv(gym.Env):
     drift_penalty = -0.1 * abs(vy)
 
     # --- 3. Yaw stability penalty ---
-    yaw_penalty = -0.1 * abs(rpy[2])
+    yaw_penalty = -0.4 * abs(rpy[2]) #0.1 originalement
 
     # --- 4. Uprightness reward (dot product of up vector with world z) ---
     up_vec = self.robot.GetBaseOrientationMatrix()[:, 2]  # robot's z-axis
@@ -477,13 +478,25 @@ class QuadrupedGymEnv(gym.Env):
 
     # --- Total reward ---
     reward = (
-        1.0 * vel_reward
-        + 0.3 * upright_reward
+        1.3 * vel_reward
+        + 0.3 * upright_reward #0.3 initialement
         + drift_penalty
         + yaw_penalty
-        + energy_penalty
+        + 0.0 * energy_penalty
     )
+    vz = self.robot.GetBaseLinearVelocity()[2]
+    z_reward = 0.1 * max(0.0, vz) # 0.1 ou 1
+    vx = self.robot.GetBaseLinearVelocity()[0]
+    neg_x_penalty = 1.0 * max(0.0, -vx) # 0.5 ou 1
 
+    pitch = rpy[1]
+    uphill_bonus = 0.2 * np.sign(pitch) * vx # 0.2 ou 1
+    
+    # --- Roll penalty: penalize lateral tilting ---
+    roll = rpy[0]
+    roll_penalty = -0.2 * abs(roll)  # penalize any roll deviation from upright
+    
+    reward = reward + z_reward - neg_x_penalty + uphill_bonus #+ roll_penalty
     # Keep reward positive
     return float(max(reward, 0.0))
 
